@@ -1,0 +1,73 @@
+#!/bin/sh
+# Starts Kanzo on 127.0.0.1:4242 and Caddy on $PORT in front of it. If either one stops
+# unexpectedly, the container exits non-zero so Railway restarts it.
+set -u
+
+fail() { echo "start-kanzo: $*" >&2; exit 1; }
+
+: "${PORT:=8080}"
+: "${KANZO_HOME:=/data/kanzo}"
+: "${KANZO_USERNAME:=admin}"
+KANZO_PASSWORD="${KANZO_PASSWORD:-}"
+KANZO_MCP_TOKEN="${KANZO_MCP_TOKEN:-}"
+
+[ "${#KANZO_PASSWORD}" -ge 12 ] || fail "KANZO_PASSWORD must be set to at least 12 characters (the template generates one)."
+[ "${#KANZO_MCP_TOKEN}" -ge 24 ] || fail "KANZO_MCP_TOKEN must be set to at least 24 characters (the template generates one)."
+case "$KANZO_MCP_TOKEN" in *[!A-Za-z0-9._~-]*) fail "KANZO_MCP_TOKEN may only contain letters, digits and . _ ~ -";; esac
+case "$KANZO_USERNAME" in ""|*[!A-Za-z0-9._@-]*) fail "KANZO_USERNAME may only contain letters, digits and . _ @ -";; esac
+[ "$PORT" != 4242 ] || fail "PORT 4242 is Kanzo's internal port; use another one (default 8080)."
+
+# Caddy (Go) would size itself for the host's CPUs, not the service's share.
+if [ -z "${GOMAXPROCS:-}" ]; then
+  n=2
+  if [ -r /sys/fs/cgroup/cpu.max ]; then
+    read -r quota period < /sys/fs/cgroup/cpu.max || true
+    case "${quota:-max}" in
+      max|"") ;;
+      *) n=$(( (quota + period - 1) / period )) ;;
+    esac
+  fi
+  [ "$n" -ge 1 ] || n=1
+  [ "$n" -le 4 ] || n=4
+  export GOMAXPROCS="$n"
+fi
+
+mkdir -p "$KANZO_HOME" "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" || fail "cannot create $KANZO_HOME (is the volume mounted at /data?)"
+
+KANZO_PASSWORD_HASH="$(caddy hash-password --plaintext "$KANZO_PASSWORD")" || fail "cannot hash KANZO_PASSWORD"
+export KANZO_USERNAME KANZO_MCP_TOKEN KANZO_PASSWORD_HASH PORT
+unset KANZO_PASSWORD
+
+kanzo --no-open --port 4242 &
+KANZO_PID=$!
+
+# Wait for Kanzo before opening the public port.
+i=0
+until wget -q -O /dev/null --header "Host: 127.0.0.1:4242" http://127.0.0.1:4242/api/ping 2>/dev/null; do
+  kill -0 "$KANZO_PID" 2>/dev/null || { wait "$KANZO_PID"; fail "Kanzo exited during startup (code $?)"; }
+  i=$((i + 1))
+  [ "$i" -le 300 ] || { kill "$KANZO_PID"; fail "Kanzo did not answer on 127.0.0.1:4242 within 30 s"; }
+  sleep 0.1
+done
+
+caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
+CADDY_PID=$!
+
+stopping=0
+trap 'stopping=1; kill -TERM "$KANZO_PID" "$CADDY_PID" 2>/dev/null' TERM INT
+
+while [ "$stopping" = 0 ] && kill -0 "$KANZO_PID" 2>/dev/null && kill -0 "$CADDY_PID" 2>/dev/null; do
+  sleep 1
+done
+
+if [ "$stopping" = 1 ]; then
+  wait "$KANZO_PID" 2>/dev/null
+  wait "$CADDY_PID" 2>/dev/null
+  exit 0
+fi
+
+kill -0 "$KANZO_PID" 2>/dev/null || echo "start-kanzo: Kanzo stopped unexpectedly" >&2
+kill -0 "$CADDY_PID" 2>/dev/null || echo "start-kanzo: Caddy stopped unexpectedly" >&2
+kill -TERM "$KANZO_PID" "$CADDY_PID" 2>/dev/null
+sleep 2
+exit 1

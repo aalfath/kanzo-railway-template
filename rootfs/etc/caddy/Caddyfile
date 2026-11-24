@@ -1,0 +1,67 @@
+{
+	admin off
+	auto_https off
+	persist_config off
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+:{$PORT} {
+	# Kanzo only answers requests whose Host is localhost or a loopback address, and whose
+	# Origin (if any) is http://<Host>. Caddy checks the browser's Origin against the public
+	# host itself, then talks to Kanzo as 127.0.0.1:4242.
+	@crossorigin `{http.request.header.Origin} != "" && {http.request.header.Origin} != "https://" + {http.request.host} && {http.request.header.Origin} != "http://" + {http.request.hostport}`
+	handle @crossorigin {
+		respond "cross-site request refused" 403
+	}
+
+	# Health check for Railway: no login, answers only when Kanzo itself answers.
+	handle /healthz {
+		rewrite * /api/ping
+		reverse_proxy 127.0.0.1:4242 {
+			header_up Host 127.0.0.1:4242
+		}
+	}
+
+	# MCP over streamable HTTP for coding agents: bearer token only.
+	@mcp path /mcp /mcp/*
+	handle @mcp {
+		@token header Authorization "Bearer {$KANZO_MCP_TOKEN}"
+		handle @token {
+			reverse_proxy 127.0.0.1:4242 {
+				header_up Host 127.0.0.1:4242
+				header_up -Origin
+				header_up -Authorization
+				flush_interval -1
+			}
+		}
+		handle {
+			header WWW-Authenticate "Bearer realm=\"kanzo-mcp\""
+			respond "missing or wrong bearer token" 401
+		}
+	}
+
+	# Things that only make sense on a desktop install: self-update (runs an installer),
+	# LAN sharing (rebinds Kanzo to every interface, without a login) and "open in editor".
+	@desktoponly {
+		method POST PUT PATCH DELETE
+		path /api/update /api/network /api/open
+	}
+	handle @desktoponly {
+		respond "not available on this Railway deploy: update by redeploying the template" 403
+	}
+
+	# The board: HTTP basic auth with the generated password.
+	handle {
+		basic_auth {
+			{$KANZO_USERNAME} {$KANZO_PASSWORD_HASH}
+		}
+		reverse_proxy 127.0.0.1:4242 {
+			header_up Host 127.0.0.1:4242
+			header_up -Origin
+			header_up -Authorization
+			flush_interval -1
+		}
+	}
+}

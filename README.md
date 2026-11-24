@@ -1,3 +1,5 @@
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/kanzo?utm_medium=integration&utm_source=button&utm_campaign=kanzo)
+
 # Kanzo on Railway
 
 One-click [Kanzo](https://github.com/emanuele-em/kanzo) on Railway: a kanban board for you in the browser and an MCP server for your coding agents, sharing the same tasks.
@@ -18,6 +20,11 @@ One-click [Kanzo](https://github.com/emanuele-em/kanzo) on Railway: a kanban boa
 | `KANZO_PASSWORD` | `${{secret(24)}}` | Password for the board (generated; see the service's Variables tab) |
 | `KANZO_MCP_TOKEN` | `${{secret(40)}}` | Bearer token for agents on `/mcp` (generated) |
 | `PORT` | `8080` | Port Caddy listens on; Kanzo itself stays on 127.0.0.1:4242 |
+
+## After deploy
+
+1. Open the service's public URL and sign in as `admin` with `KANZO_PASSWORD` from the service's **Variables** tab.
+2. Create a project, then connect your agents (below). Use the board's URL to share it; Kanzo's LAN share/join and git sync are desktop features and are not needed here.
 
 ## Connect an agent
 
